@@ -260,32 +260,62 @@ function parseGeminiResponse(
   }
 
   try {
-    // Clean up the response — remove code fences if present
-    let cleaned = text.trim();
-    if (cleaned.startsWith("```json")) {
-      cleaned = cleaned.replace(/^```json\s*/, "").replace(/\s*```$/, "");
-    } else if (cleaned.startsWith("```")) {
-      cleaned = cleaned.replace(/^```\s*/, "").replace(/\s*```$/, "");
+    // Strategy 1: Find JSON array anywhere in the response
+    // Gemini 2.5-flash may include thinking tokens before/after the JSON
+    const jsonMatch = text.match(/\[[\s\S]*\]/);
+    if (jsonMatch) {
+      let jsonStr = jsonMatch[0];
+      // Clean any code fences inside
+      jsonStr = jsonStr.replace(/```json\s*/g, "").replace(/```\s*/g, "");
+      const parsed = JSON.parse(jsonStr);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed.map((item: any) => ({
+          id: item.id || "",
+          answer:
+            typeof item.answer === "object"
+              ? JSON.stringify(item.answer)
+              : String(item.answer || ""),
+          confidence:
+            typeof item.confidence === "number" ? item.confidence : 0.5,
+        }));
+      }
     }
 
-    const parsed = JSON.parse(cleaned);
+    // Strategy 2: Try code fence extraction
+    const codeFenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+    if (codeFenceMatch) {
+      const parsed = JSON.parse(codeFenceMatch[1].trim());
+      if (Array.isArray(parsed)) {
+        return parsed.map((item: any) => ({
+          id: item.id || "",
+          answer:
+            typeof item.answer === "object"
+              ? JSON.stringify(item.answer)
+              : String(item.answer || ""),
+          confidence:
+            typeof item.confidence === "number" ? item.confidence : 0.5,
+        }));
+      }
+    }
+
+    // Strategy 3: Try full text as JSON
+    const parsed = JSON.parse(text.trim());
     if (Array.isArray(parsed)) {
       return parsed.map((item: any) => ({
         id: item.id || "",
-        answer: typeof item.answer === "object"
-          ? JSON.stringify(item.answer)
-          : String(item.answer || ""),
-        confidence: typeof item.confidence === "number" ? item.confidence : 0.5,
+        answer: String(item.answer || ""),
+        confidence:
+          typeof item.confidence === "number" ? item.confidence : 0.5,
       }));
     }
   } catch (e) {
-    console.error("Failed to parse Gemini response:", e, text);
+    console.error("Failed to parse Gemini response:", e, text?.substring(0, 200));
   }
 
   // Fallback: return raw text for first question
   return questions.map((q, i) => ({
     id: q.id,
-    answer: i === 0 ? text : "Could not parse answer",
+    answer: i === 0 ? text.substring(0, 500) : "Could not parse answer",
     confidence: 0.3,
   }));
 }
