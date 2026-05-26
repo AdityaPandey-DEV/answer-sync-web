@@ -9,45 +9,33 @@ function LoginContent() {
   const searchParams = useSearchParams();
   const source = searchParams.get("source");
   const [sent, setSent] = useState(false);
+  const [tokenData, setTokenData] = useState<any>(null);
 
   useEffect(() => {
-    // If logged in and came from extension, send token back
+    // If logged in and came from extension, get a token for the extension
     if (session && source === "extension" && !sent) {
-      // Get the session token to send to extension
-      const sendTokenToExtension = async () => {
+      const fetchToken = async () => {
         try {
-          // Fetch the session token
-          const res = await fetch("/api/auth/session");
-          const data = await res.json();
-
-          // Get raw cookies to find session token
-          const cookies = document.cookie.split(";").map((c) => c.trim());
-          const sessionCookie = cookies.find(
-            (c) =>
-              c.startsWith("next-auth.session-token=") ||
-              c.startsWith("__Secure-next-auth.session-token=")
-          );
-
-          let token = "";
-          if (sessionCookie) {
-            token = sessionCookie.split("=").slice(1).join("=");
-          }
-
-          if (token && session.user) {
+          // Call our API to get a token the extension can use
+          const res = await fetch("/api/auth/extension-token");
+          if (res.ok) {
+            const data = await res.json();
+            // postMessage to the content script
             window.postMessage(
               {
                 type: "ANSWER_SYNC_AUTH",
-                token,
+                token: data.token,
                 user: {
-                  email: session.user.email,
-                  name: session.user.name,
-                  tier: "free", // Will be fetched from backend
-                  dailyCreditsUsed: 0,
-                  dailyCreditLimit: 20,
+                  email: data.email,
+                  name: data.name,
+                  tier: data.tier || "free",
+                  dailyCreditsUsed: data.dailyCreditsUsed || 0,
+                  dailyCreditLimit: data.dailyCreditLimit || 20,
                 },
               },
               window.location.origin
             );
+            setTokenData(data);
             setSent(true);
           }
         } catch (e) {
@@ -55,7 +43,7 @@ function LoginContent() {
         }
       };
 
-      sendTokenToExtension();
+      fetchToken();
     }
   }, [session, source, sent]);
 
@@ -81,11 +69,13 @@ function LoginContent() {
               You&apos;re signed in as{" "}
               <span className="text-white font-medium">{session.user?.email}</span>.
               <br />
-              You can now close this tab and return to the extension.
+              {sent
+                ? "Your extension is now connected. You can close this tab."
+                : "Connecting to extension..."}
             </p>
-            <p className="text-sm text-gray-500">
-              The extension will automatically detect your session.
-            </p>
+            {!sent && (
+              <div className="w-6 h-6 border-2 border-white/10 border-t-purple-500 rounded-full animate-spin mx-auto"></div>
+            )}
           </div>
         </div>
       );
