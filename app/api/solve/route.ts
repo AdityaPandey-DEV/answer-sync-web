@@ -7,8 +7,12 @@ import {
   resetDailyCreditsIfNeeded,
 } from "@/lib/auth-helpers";
 
-const GEMINI_API_URL =
-  "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
+const GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
+const GEMINI_MODELS = [
+  "gemini-2.5-flash",
+  "gemini-2.0-flash-lite",
+  "gemini-flash-latest",
+];
 
 export async function POST(request: NextRequest) {
   try {
@@ -94,8 +98,8 @@ export async function POST(request: NextRequest) {
     // 5. Build the prompt
     const prompt = buildPrompt(cappedQuestions);
 
-    // 6. Call Gemini API
-    const geminiResponse = await callGemini(apiKey, prompt);
+    // 6. Call Gemini API (with model fallback)
+    const geminiResponse = await callGeminiWithFallback(apiKey, prompt);
 
     if (geminiResponse.error) {
       return NextResponse.json(
@@ -187,51 +191,59 @@ QUESTIONS:
 ${questionsList}`;
 }
 
-// ---- Gemini API Call ----
+// ---- Gemini API Call with Model Fallback ----
+async function callGeminiWithFallback(
+  apiKey: string,
+  prompt: string
+): Promise<{ text?: string; error?: string }> {
+  let lastError = "";
+  for (const model of GEMINI_MODELS) {
+    const result = await callGemini(apiKey, prompt, model);
+    if (result.text) return result;
+    lastError = result.error || "Unknown error";
+    // If it's a 503/429, try next model
+    if (lastError.includes("503") || lastError.includes("429") || lastError.includes("UNAVAILABLE")) {
+      console.log(`[solve] Model ${model} unavailable, trying next...`);
+      continue;
+    }
+    // For other errors (auth, bad request), don't retry
+    return result;
+  }
+  return { error: lastError };
+}
+
 async function callGemini(
   apiKey: string,
   prompt: string,
-  retries: number = 1
+  model: string
 ): Promise<{ text?: string; error?: string }> {
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    try {
-      const res = await fetch(`${GEMINI_API_URL}?key=${apiKey}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: {
-            temperature: 0.1,
-            maxOutputTokens: 4096,
-          },
-        }),
-      });
+  try {
+    const url = `${GEMINI_BASE}/${model}:generateContent?key=${apiKey}`;
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: {
+          temperature: 0.1,
+          maxOutputTokens: 4096,
+        },
+      }),
+    });
 
-      if (!res.ok) {
-        const errBody = await res.text();
-        if (res.status === 429 && attempt < retries) {
-          // Rate limited — wait and retry
-          await new Promise((r) => setTimeout(r, 2000 * (attempt + 1)));
-          continue;
-        }
-        return {
-          error: `Gemini API error (${res.status}): ${errBody.substring(0, 200)}`,
-        };
-      }
-
-      const data = await res.json();
-      const text =
-        data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
-      return { text };
-    } catch (e: any) {
-      if (attempt < retries) {
-        await new Promise((r) => setTimeout(r, 2000));
-        continue;
-      }
-      return { error: `Network error: ${e.message}` };
+    if (!res.ok) {
+      const errBody = await res.text();
+      return {
+        error: `Gemini API error (${res.status}): ${errBody.substring(0, 200)}`,
+      };
     }
+
+    const data = await res.json();
+    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+    return { text };
+  } catch (e: any) {
+    return { error: `Network error: ${e.message}` };
   }
-  return { error: "Max retries exceeded" };
 }
 
 // ---- Parse Gemini Response ----
