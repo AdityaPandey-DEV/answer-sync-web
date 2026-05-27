@@ -134,37 +134,24 @@ function buildUniversalPrompt(pageText: string, pageUrl: string): string {
     ? pageText.substring(0, 6000) + "\n...[truncated]"
     : pageText;
 
-  return `You are analyzing a quiz/exam/assessment webpage. Your task is to identify ALL questions and provide the correct answer for each.
+  return `You are a quiz/exam answer engine. Below is visible text from a quiz webpage. Find EVERY question and provide the correct answer.
 
-INSTRUCTIONS:
-1. Read the page text below carefully
-2. Identify every question (look for numbered items, question marks, or multiple-choice patterns)
-3. For each question, identify the answer options if they exist
-4. Provide the most accurate answer for each question
+CRITICAL: You MUST return at least one question. The text below is from a real quiz page - look carefully for questions, even if the text contains navigation or other noise.
 
-IMPORTANT RULES:
-- For multiple-choice: Return the EXACT text of the correct option as it appears on the page
-- For fill-in-the-blank: Return a concise, accurate answer
+RULES:
+- For multiple-choice: Return the EXACT text of the correct option as written on the page
+- For multi-select ("select TWO", "select all that apply"): Return a JSON array of correct options as the answer, e.g. ["Option A", "Option C"]
+- For fill-in-the-blank: Return a concise answer
 - For true/false: Return "True" or "False"
-- Identify the answer options EXACTLY as written on the page (the user will need to click them)
-- Return ONLY valid JSON, no markdown, no explanation
+- NEVER return an empty array []
+- You MUST find at least one question in the text below
 
-RETURN FORMAT (JSON array):
-[
-  {
-    "id": "q_0",
-    "question": "the full question text",
-    "options": ["Option A text", "Option B text", "Option C text"],
-    "answer": "exact text of correct option",
-    "confidence": 0.95
-  }
-]
+Return ONLY a JSON array (no markdown, no explanation, no code fences):
+[{"id":"q_0","question":"full question text","options":["option1","option2"],"answer":"exact correct option text","confidence":0.95}]
 
 ${pageUrl ? `PAGE URL: ${pageUrl}\n` : ""}
-PAGE TEXT:
----
-${trimmedText}
----`;
+PAGE CONTENT:
+${trimmedText}`;
 }
 
 // ---- Gemini API Call with Model Fallback ----
@@ -200,7 +187,6 @@ async function callGemini(
         generationConfig: {
           temperature: 0.1,
           maxOutputTokens: 4096,
-          responseMimeType: "application/json",
         },
       }),
     });
@@ -224,9 +210,14 @@ function parseUniversalResponse(
 ): Array<{ id: string; question: string; options: string[]; answer: string; confidence: number }> {
   if (!text) return [];
 
-  // Strategy 1: Try direct JSON parse (responseMimeType should give clean JSON)
+  // Remove thinking tokens first
+  text = text.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+  // Remove markdown code fences
+  text = text.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
+
+  // Strategy 1: Try direct JSON parse
   try {
-    const parsed = JSON.parse(text.trim());
+    const parsed = JSON.parse(text);
     if (Array.isArray(parsed) && parsed.length > 0) {
       return mapParsedQuestions(parsed);
     }
