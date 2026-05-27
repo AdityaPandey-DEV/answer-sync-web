@@ -36,35 +36,49 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 3. Get API key
-    await resetDailyCreditsIfNeeded(user);
-    const dbUser = await prisma.user.findUnique({ where: { id: user.id } });
-    if (!dbUser) {
-      return NextResponse.json({ error: "User not found" }, { status: 404 });
-    }
+    // 3. Get admin settings
+    const settings = await getAdminSettings();
 
-    let apiKey = "";
-    if (dbUser.geminiApiKey) {
-      apiKey = decrypt(dbUser.geminiApiKey);
+    // 4. Determine API key
+    let apiKey: string;
+
+    if (
+      user.tier === "pro" &&
+      user.encryptedApiKey &&
+      user.apiKeyIv &&
+      user.apiKeyTag
+    ) {
+      try {
+        apiKey = decrypt(user.encryptedApiKey, user.apiKeyIv, user.apiKeyTag);
+      } catch {
+        return NextResponse.json(
+          { error: "Failed to decrypt your API key. Please re-save it on the dashboard." },
+          { status: 500 }
+        );
+      }
     } else {
-      const settings = await getAdminSettings();
-      apiKey = settings.adminGeminiApiKey || "";
-    }
+      // Free user: use admin key with credit check
+      await resetDailyCreditsIfNeeded(user.id);
 
-    if (!apiKey) {
-      return NextResponse.json(
-        { error: "No API key configured." },
-        { status: 503 }
-      );
-    }
+      const freshUser = await prisma.user.findUnique({ where: { id: user.id } });
+      if (!freshUser) {
+        return NextResponse.json({ error: "User not found" }, { status: 404 });
+      }
 
-    // 4. Check credits
-    const creditLimit = dbUser.dailyCreditLimit || 20;
-    if (!dbUser.geminiApiKey && dbUser.dailyCreditsUsed >= creditLimit) {
-      return NextResponse.json(
-        { error: "Daily credit limit reached." },
-        { status: 429 }
-      );
+      if (freshUser.dailyCreditsUsed >= settings.dailyCreditLimit) {
+        return NextResponse.json(
+          { error: "Daily credit limit reached." },
+          { status: 429 }
+        );
+      }
+
+      apiKey = process.env.ADMIN_GEMINI_API_KEY || "";
+      if (!apiKey) {
+        return NextResponse.json(
+          { error: "Service temporarily unavailable. Admin key not configured." },
+          { status: 503 }
+        );
+      }
     }
 
     // 5. Build the universal prompt
@@ -83,17 +97,18 @@ export async function POST(request: NextRequest) {
     // 7. Parse response
     const questions = parseUniversalResponse(geminiResponse.text);
 
-    // 8. Deduct credit
-    if (!dbUser.geminiApiKey) {
+    // 8. Deduct credit (free users only)
+    if (user.tier !== "pro") {
       await prisma.user.update({
         where: { id: user.id },
         data: { dailyCreditsUsed: { increment: 1 } },
       });
     }
 
-    const creditsRemaining = dbUser.geminiApiKey
+    const freshUser2 = await prisma.user.findUnique({ where: { id: user.id } });
+    const creditsRemaining = user.tier === "pro"
       ? 999
-      : creditLimit - dbUser.dailyCreditsUsed - 1;
+      : settings.dailyCreditLimit - (freshUser2?.dailyCreditsUsed || 0);
 
     return NextResponse.json({
       questions,
