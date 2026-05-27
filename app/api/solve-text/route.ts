@@ -197,7 +197,20 @@ async function callGemini(
     }
 
     const data = await res.json();
-    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+    // Gemini 2.5-flash returns thinking in parts with thought:true
+    // The actual answer is in the last part without thought:true
+    const parts = data?.candidates?.[0]?.content?.parts || [];
+    let text = "";
+    for (const part of parts) {
+      if (!part.thought && part.text) {
+        text = part.text; // Take the last non-thought part
+      }
+    }
+    // Fallback: if no non-thought part found, use the last part
+    if (!text && parts.length > 0) {
+      text = parts[parts.length - 1]?.text || "";
+    }
+    console.log("[solve-text] Model response parts:", parts.length, "Answer text:", text.substring(0, 200));
     return { text };
   } catch (e: any) {
     return { error: `Network error: ${e.message}` };

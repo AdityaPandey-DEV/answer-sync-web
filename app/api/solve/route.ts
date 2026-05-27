@@ -239,7 +239,16 @@ async function callGemini(
     }
 
     const data = await res.json();
-    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+    const parts = data?.candidates?.[0]?.content?.parts || [];
+    let text = "";
+    for (const part of parts) {
+      if (!part.thought && part.text) {
+        text = part.text;
+      }
+    }
+    if (!text && parts.length > 0) {
+      text = parts[parts.length - 1]?.text || "";
+    }
     return { text };
   } catch (e: any) {
     return { error: `Network error: ${e.message}` };
